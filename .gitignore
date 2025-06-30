@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+env/
+venv/
+ENV/
+.env
+
+# PyTorch Lightning
+lightning_logs/
+checkpoints/
+*.ckpt
+
+# TensorBoard日志
+logs/
+/root/autodl-tmp/VQualA/logs/
+/root/autodl-tmp/VQualA/checkpoints/
+
+# 数据文件 - 忽略视频和大型数据文件
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.pth
+*.pt
+*.bin
+
+# 数据集视频文件
+data/train/
+data/val/
+data/*.mp4
+
+# 保留CSV文件和Python脚本，但忽略视频文件
+# data/train.csv  # 这个保留
+# data/val.csv    # 这个保留
+# data/dataset.py # 这个保留
+
+# Jupyter Notebook检查点
+.ipynb_checkpoints/
+data/.ipynb_checkpoints/
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
