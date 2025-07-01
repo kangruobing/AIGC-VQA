@@ -112,7 +112,7 @@ def main():
     
     args = parser.parse_args()
 
-    for split_id in range(args.num_splits):
+    for split_id in range(1, args.num_splits):
         try:
             train_single_split(args, split_id)
         except Exception as e:
