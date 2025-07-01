@@ -17,6 +17,7 @@ class BaseVQualADataset(Dataset):
 
     def __init__(self,
                  dataset_type: str,
+                 num_splits: int,
                  video_size: int = 224,
                  num_frames: int = 16,
                  video_clip_min: int = 8,
@@ -30,11 +31,11 @@ class BaseVQualADataset(Dataset):
         self.video_clip_length = video_clip_length
 
         if dataset_type == 'train':
-            self.csv_path = "/root/autodl-tmp/VQualA/data/train.csv"
+            self.csv_path = f"/root/autodl-tmp/VQualA/data/train_{num_splits+1}.csv"
             self.videos_dir = "/root/autodl-tmp/VQualA/data/train"
         else:
-            self.csv_path = "/root/autodl-tmp/VQualA/data/val.csv"
-            self.videos_dir = "/root/autodl-tmp/VQualA/data/val"
+            self.csv_path = f"/root/autodl-tmp/VQualA/data/val_{num_splits+1}.csv"
+            self.videos_dir = "/root/autodl-tmp/VQualA/data/train"
 
         self._load_data()
 
@@ -242,20 +243,20 @@ class VQualADataset(BaseVQualADataset):
 
 class DatasetImage(VQualADataset):
     """图像数据集"""
-    def __init__(self, dataset_type: str, num_frames: int = 6, video_size: int = 224, traditional_size: int = 384):
-        super().__init__(dataset_type, mode='image', num_frames=num_frames, video_size=video_size, traditional_size=traditional_size)
+    def __init__(self, dataset_type: str, num_splits: int, num_frames: int = 6, video_size: int = 224, traditional_size: int = 384):
+        super().__init__(dataset_type, num_splits=num_splits, mode='image', num_frames=num_frames, video_size=video_size, traditional_size=traditional_size)
 
 
 class DatasetVideo(VQualADataset):
     """视频数据集"""
-    def __init__(self, dataset_type: str, video_size: int = 224, video_clip_min: int = 8, video_clip_length: int = 32):
-        super().__init__(dataset_type, mode='video', video_size=video_size, video_clip_min=video_clip_min, video_clip_length=video_clip_length)
+    def __init__(self, dataset_type: str, num_splits: int, video_size: int = 224, video_clip_min: int = 8, video_clip_length: int = 32):
+        super().__init__(dataset_type, num_splits=num_splits, mode='video', video_size=video_size, video_clip_min=video_clip_min, video_clip_length=video_clip_length)
 
 
 class DatasetTrack1(VQualADataset):
     """混合数据集"""
-    def __init__(self, dataset_type: str, num_frames: int = 6, video_size: int = 224, traditional_size: int = 384, video_clip_min: int = 8, video_clip_length: int = 32):
-        super().__init__(dataset_type, mode='all', num_frames=num_frames, video_size=video_size, traditional_size=traditional_size,
+    def __init__(self, dataset_type: str, num_splits: int, num_frames: int = 6, video_size: int = 224, traditional_size: int = 384, video_clip_min: int = 8, video_clip_length: int = 32):
+        super().__init__(dataset_type, num_splits=num_splits, mode='all', num_frames=num_frames, video_size=video_size, traditional_size=traditional_size,
                         video_clip_min=video_clip_min, video_clip_length=video_clip_length)
 
 

@@ -20,6 +20,7 @@ from collections import OrderedDict
 
 import scipy.stats
 import numpy as np
+import pandas as pd
 import json
 import os
 from datetime import datetime
@@ -33,7 +34,6 @@ def init_tokenizer():
     return tokenizer
 
 def create_vit(vit, image_size, use_grad_checkpointing=False, ckpt_layer=0, drop_path_rate=0):
-        
     assert vit in ['base', 'large'], "vit parameter must be base or large"
     if vit=='base':
         vision_width = 768
@@ -106,10 +106,10 @@ class Alignmodule(pl.LightningModule):
                  image_size,
                  vit_weights,
                  bert_weights,
+                 split_id,
+                 output_dir="/root/autodl-tmp/VQualA/alignment_module",
                  weight_type="imagereward",
                  imagereward_path="/root/autodl-tmp/VQualA/alignment_module/imagereward.pth",
-                 logs_path="/root/autodl-tmp/VQualA/alignment_module/logs",
-                 checkpoints_path="/root/autodl-tmp/VQualA/alignment_module/checkpoints",
                  frozen_ratio=0.7,
                  lr=3e-5,
                  alpha=1.0,
@@ -151,6 +151,9 @@ class Alignmodule(pl.LightningModule):
         self.regress = Regress(in_features=hidden_size)
 
         #初始化指标记录
+        logs_path = os.path.join(output_dir, f"split_{split_id+1}")
+        checkpoints_path = os.path.join(output_dir, f"split_{split_id+1}")
+
         self.log_file_path, self.metrics_history = setup_metrics_logging(logs_path, checkpoints_path)
 
         #存储预测结果
@@ -314,7 +317,7 @@ class Alignmodule(pl.LightningModule):
         all_targets = np.array(self.validation_targets)
 
         #相关性指标
-        final_plcc, final_srocc = performance_fit(torch.tensor(all_predictions), torch.tensor(all_targets))
+        final_plcc, final_srocc = performance_fit(torch.tensor(all_targets), torch.tensor(all_predictions))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
         results = {
@@ -358,29 +361,49 @@ class Alignmodule(pl.LightningModule):
         }
     
     def evaluate_dataset(self,
-                        dataloader,
-                        results_file="final_evaluation.json",
-                        results_path="/root/autodl-tmp/VQualA/alignment_module/logs"):
-        """在训练结束后评估整个数据集"""
+                         dataloader,
+                         model_weights_path=None,
+                         results_file="final_evaluation.csv",
+                         results_path="/root/autodl-tmp/VQualA/alignment_module/logs"):
+        """在训练结束后对验证/测试集进行评估"""
         print("\n=== 开始对数据集进行评估 ===")
+
+        if model_weights_path is not None:
+            if os.path.exists(model_weights_path):
+                print(f"正在加载模型权重: {model_weights_path}")
+                checkpoint = torch.load(model_weights_path, map_location='cpu')
+
+                if 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                else:
+                    state_dict = checkpoint
+
+                self.load_state_dict(state_dict, strict=False)
+                print("模型权重加载完成")
+            else:
+                print(f"模型权重不存在: {model_weights_path}")
+                print("使用当前模型权重进行评估")
 
         self.eval()
         all_predictions = []
         all_targets = []
         all_prompts = []
+        all_video_names = []
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
                 #移动数据到设备
                 image = batch["image"].to(self.device)
-                prompt = batch["prompt"].to(self.device)
+                prompt = batch["prompt"]
                 target_score = batch["Alignment_MOS"].to(self.device)
+                video_names = batch["video_name"]
 
                 predicted_score = self.forward(image, prompt)
 
                 all_predictions.extend(predicted_score.cpu().numpy())
                 all_targets.extend(target_score.cpu().numpy())
                 all_prompts.extend(prompt)
+                all_video_names.extend(video_names)
 
                 if (batch_idx + 1) % 50 == 0:
                     print(f"已处理 {batch_idx + 1} 个batch")
@@ -389,33 +412,46 @@ class Alignmodule(pl.LightningModule):
         all_targets = np.array(all_targets)
 
         #相关性指标
-        final_plcc, final_srocc = performance_fit(torch.tensor(all_targets), torch.tensor(all_predictions))
+        final_plcc = calculate_plcc(torch.tensor(all_predictions), torch.tensor(all_targets))
+        final_srocc = calculate_srocc(torch.tensor(all_predictions), torch.tensor(all_targets))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
-        # 其他指标
-        # mse = np.mean((all_predictions - all_targets) ** 2)
-        # mae = np.mean(np.abs(all_predictions - all_targets))
+        detailed_results = pd.DataFrame({
+            'video_name': all_video_names,
+            'Alignment_MOS': all_predictions
+        })
 
-        results = {
-            'num_samples': len(all_predictions),
-            'plcc': final_plcc,
-            'srocc': final_srocc,
-            'corr_avg': final_corr_avg
+        os.makedirs(results_path, exist_ok=True)
+
+        detailed_csv_path = os.path.join(results_path, results_file)
+        detailed_results.to_csv(detailed_csv_path, index=False)
+
+        summary_file = results_file.replace('.csv', '_summary.json')
+        summary_path = os.path.join(results_path, summary_file)
+
+        summary_results = {
+            'evaluation_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%H:%S'),
+                'model_weights_path': model_weights_path,
+                'num_samples': len(all_predictions)
+            },
+            'metrics': {
+                'plcc': final_plcc,
+                'srocc': final_srocc,
+                'corr_avg': final_corr_avg
+            }
         }
 
-        #保存结果
-        results_path = os.path.join(results_path, results_file)
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_results, f, indent=2, ensure_ascii=False)
 
-        save_metrics_to_file(results, results_path)
-
-        #打印结果
         print(f"\n=== 数据集评估结果 ===")
         print(f"总样本数： {len(all_predictions)}")
         print(f"PLCC: {final_plcc:.4f}")
         print(f"SROCC: {final_srocc:.4f}")
         print(f"Corr_AVG: {final_corr_avg:.4f}")
 
-        return results
+        return summary_results, detailed_results
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(

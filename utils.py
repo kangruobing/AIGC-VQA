@@ -1,15 +1,25 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pytorch_lightning as pl
 from torch import Tensor
 
 import os
 import json
+import random
 import numpy as np
 from scipy import stats
 from scipy.optimize import curve_fit
 from datetime import datetime
 
+
+def set_random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    pl.seed_everything(seed)
+    print(f"已设置随机种子: {seed}")
 
 def setup_metrics_logging(logs_path: str, checkpoints_path: str):
     """

@@ -10,11 +10,12 @@ sys.path.append('/root/autodl-tmp/VQualA')
 sys.path.append('/root/autodl-tmp/VQualA/aesthetic_module/model')
 
 from utils import save_metrics_to_file, setup_metrics_logging, Regress
-from utils import calculate_plcc, calculate_srocc, combined_loss
+from utils import calculate_plcc, calculate_srocc, combined_loss, performance_fit
 
 from conv_backbone import convnext_3d_tiny, convnext_3d_small
 from datetime import datetime
 import numpy as np
+import pandas as pd
 import os
 import json
 import scipy.stats
@@ -22,8 +23,8 @@ import scipy.stats
 
 class Aestheticmodule(pl.LightningModule):
     def __init__(self,
-                 logs_path="/root/autodl-tmp/VQualA/aesthetic_module/logs",
-                 checkpoints_path="/root/autodl-tmp/VQualA/aesthetic_module/checkpoints",
+                 split_id,
+                 output_dir="/root/autodl-tmp/VQualA/aesthetic_module",
                  model_size="tiny",
                  lr=1e-4,
                  alpha=1.0,
@@ -44,6 +45,9 @@ class Aestheticmodule(pl.LightningModule):
         self.regress = Regress(768)
 
         #初始化指标记录
+        logs_path = os.path.join(output_dir, f"split_{split_id+1}")
+        checkpoints_path = os.path.join(output_dir, f"split_{split_id+1}")
+
         self.log_file_path, self.metrics_history = setup_metrics_logging(logs_path, checkpoints_path)
                
         self.validation_predictions = []
@@ -98,8 +102,7 @@ class Aestheticmodule(pl.LightningModule):
 
         predicted_score = self.forward(video)
 
-        plcc = calculate_plcc(predicted_score, target_score)
-        srocc = calculate_srocc(predicted_score, target_score)
+        plcc, srocc = performance_fit(target_score, predicted_score)
         loss = combined_loss(predicted_score, target_score, self.alpha, self.beta)
 
         self.log('val_loss', loss, prog_bar=True)
@@ -130,8 +133,7 @@ class Aestheticmodule(pl.LightningModule):
         all_targets = np.array(self.validation_targets)
 
         #相关性指标
-        final_plcc = calculate_plcc(torch.tensor(all_predictions), torch.tensor(all_targets))
-        final_srocc = calculate_srocc(torch.tensor(all_predictions), torch.tensor(all_targets))
+        final_plcc, final_srocc = performance_fit(torch.tensor(all_targets), torch.tensor(all_predictions))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
         results = {
@@ -179,25 +181,45 @@ class Aestheticmodule(pl.LightningModule):
     
     def evaluate_dataset(self,
                          dataloader,
-                         results_file="final_evaluation.json",
+                         model_weights_path=None,
+                         results_file="final_evaluation.csv",
                          results_path="/root/autodl-tmp/VQualA/aesthetic_module/logs"):
-        """在训练结束后用于评估数据集"""
+        """在训练结束后对验证/测试集进行评估"""
         print("\n=== 开始对数据集进行评估 ===")
+
+        if model_weights_path is not None:
+            if os.path.exists(model_weights_path):
+                print(f"正在加载模型权重: {model_weights_path}")
+                checkpoint = torch.load(model_weights_path, map_location='cpu')
+
+                if 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                else:
+                    state_dict = checkpoint
+
+                self.load_state_dict(state_dict, strict=False)
+                print("模型权重加载完成")
+            else:
+                print(f"模型权重不存在: {model_weights_path}")
+                print("使用当前模型权重进行评估")
 
         self.eval()
         all_predictions = []
         all_targets = []
+        all_video_names = []
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
                 #移动数据到设备
                 video = batch["video"].to(self.device)
                 target_score = batch["Aesthetic_MOS"].to(self.device)
+                video_names = batch["video_name"]
 
                 predicted_score = self.forward(video)
 
                 all_predictions.extend(predicted_score.cpu().numpy())
                 all_targets.extend(target_score.cpu().numpy())
+                all_video_names.extend(video_names)
 
                 if (batch_idx + 1) % 50 == 0:
                     print(f"已处理 {batch_idx + 1} 个batch")
@@ -210,17 +232,34 @@ class Aestheticmodule(pl.LightningModule):
         final_srocc = calculate_srocc(torch.tensor(all_predictions), torch.tensor(all_targets))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
-        results = {
-            'num_samples': len(all_predictions),
-            'plcc': final_plcc,
-            'srocc': final_srocc,
-            'corr_avg': final_corr_avg
+        detailed_results = pd.DataFrame({
+            'video_name': all_video_names,
+            'Aesthetic_MOS': all_predictions
+        })
+
+        os.makedirs(results_path, exist_ok=True)
+
+        detailed_csv_path = os.path.join(results_path, results_file)
+        detailed_results.to_csv(detailed_csv_path, index=False)
+
+        summary_file = results_file.replace('.csv', '_summary.json')
+        summary_path = os.path.join(results_path, summary_file)
+
+        summary_results = {
+            'evaluation_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%H:%S'),
+                'model_weights_path': model_weights_path,
+                'num_samples': len(all_predictions)
+            },
+            'metrics': {
+                'plcc': final_plcc,
+                'srocc': final_srocc,
+                'corr_avg': final_corr_avg
+            }
         }
 
-        #保存结果
-        results_path = os.path.join(results_path, results_file)
-
-        save_metrics_to_file(results, results_path)
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_results, f, indent=2, ensure_ascii=False)
 
         print(f"\n=== 数据集评估结果 ===")
         print(f"总样本数： {len(all_predictions)}")
@@ -228,7 +267,7 @@ class Aestheticmodule(pl.LightningModule):
         print(f"SROCC: {final_srocc:.4f}")
         print(f"Corr_AVG: {final_corr_avg:.4f}")
 
-        return results
+        return summary_results, detailed_results
     
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
