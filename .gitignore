@@ -32,6 +32,7 @@ logs/
 
 # 数据集视频文件
 data/train/
+data/test/
 data/val/
 data/*.mp4
 
