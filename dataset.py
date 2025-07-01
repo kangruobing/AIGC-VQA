@@ -29,13 +29,17 @@ class BaseVQualADataset(Dataset):
         self.num_frames = num_frames
         self.video_clip_min = video_clip_min
         self.video_clip_length = video_clip_length
+        self.is_test = dataset_type == 'test'
 
         if dataset_type == 'train':
             self.csv_path = f"/root/autodl-tmp/VQualA/data/train_{num_splits+1}.csv"
             self.videos_dir = "/root/autodl-tmp/VQualA/data/train"
-        else:
+        elif dataset_type == 'val':
             self.csv_path = f"/root/autodl-tmp/VQualA/data/val_{num_splits+1}.csv"
             self.videos_dir = "/root/autodl-tmp/VQualA/data/train"
+        else:
+            self.csv_path = "/root/autodl-tmp/VQualA/data/test.csv"
+            self.videos_dir = "/root/autodl-tmp/VQualA/data/test"
 
         self._load_data()
 
@@ -51,11 +55,22 @@ class BaseVQualADataset(Dataset):
 
             self.video_names = dataInfo["video_name"].tolist()
             self.prompts = dataInfo["Prompt"].tolist()
-            self.overall_mos = dataInfo["Overall_MOS"].tolist()
-            self.traditional_mos = dataInfo["Traditional_MOS"].tolist()
-            self.alignment_mos = dataInfo["Alignment_MOS"].tolist()
-            self.aesthetic_mos = dataInfo["Aesthetic_MOS"].tolist()
-            self.temporal_mos = dataInfo["Temporal_MOS"].tolist()
+
+            if self.is_test:
+                num_samples = len(self.video_names)
+                default_value = 0.0
+                self.overall_mos = [default_value] * num_samples
+                self.traditional_mos = [default_value] * num_samples
+                self.alignment_mos = [default_value] * num_samples
+                self.aesthetic_mos = [default_value] * num_samples
+                self.temporal_mos = [default_value] * num_samples
+            else:
+                self.overall_mos = dataInfo["Overall_MOS"].tolist()
+                self.traditional_mos = dataInfo["Traditional_MOS"].tolist()
+                self.alignment_mos = dataInfo["Alignment_MOS"].tolist()
+                self.aesthetic_mos = dataInfo["Aesthetic_MOS"].tolist()
+                self.temporal_mos = dataInfo["Temporal_MOS"].tolist()
+
         except Exception as e:
             print(f"加载数据时出错: {e}")
             raise
@@ -213,13 +228,17 @@ class VQualADataset(BaseVQualADataset):
 
         data = {
             "prompt": self.prompts[idx],
-            "Overall_MOS": self.overall_mos[idx],
-            "Traditional_MOS": self.traditional_mos[idx],
-            "Alignment_MOS": self.alignment_mos[idx],
-            "Aesthetic_MOS": self.aesthetic_mos[idx],
-            "Temporal_MOS": self.temporal_mos[idx],
             "video_name": video_name
         }
+        
+        if not self.is_test:
+            data.update({
+                "Overall_MOS": self.overall_mos[idx],
+                "Traditional_MOS": self.traditional_mos[idx],
+                "Alignment_MOS": self.alignment_mos[idx],
+                "Aesthetic_MOS": self.aesthetic_mos[idx],
+                "Temporal_MOS": self.temporal_mos[idx]
+            })
 
         if self.mode == 'image':
             frames = self.extract_frames(video_name)
@@ -258,5 +277,7 @@ class DatasetTrack1(VQualADataset):
     def __init__(self, dataset_type: str, num_splits: int, num_frames: int = 6, video_size: int = 224, traditional_size: int = 384, video_clip_min: int = 8, video_clip_length: int = 32):
         super().__init__(dataset_type, num_splits=num_splits, mode='all', num_frames=num_frames, video_size=video_size, traditional_size=traditional_size,
                         video_clip_min=video_clip_min, video_clip_length=video_clip_length)
+        
+
 
 
