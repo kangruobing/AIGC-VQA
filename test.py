@@ -8,9 +8,9 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.append("/root/autodl-tmp/VQualA")
-from dataset import DatasetImage
+from dataset import DatasetTrack1
 
-from model.model import Alignmodule
+from model import AIGCVQA
 
 
 def load_model(model_path, device):
@@ -28,15 +28,7 @@ def load_model(model_path, device):
         print("检测到Pytorch Lightning前缀, 正在移除...")
         state_dict = {k[6:]: v for k, v in state_dict.items()}
 
-    model = Alignmodule(
-        bert_config="/root/autodl-tmp/VQualA/alignment_module/med_config.json",
-        image_size=224,
-        vit_weights="/root/autodl-tmp/VQualA/alignment_module/model_large.pth",
-        bert_weights="/root/autodl-tmp/VQualA/alignment_module/bert-base-uncased/pytorch_model.bin",
-        split_id=0,
-        weight_type="imagereward",
-        imagereward_path="/root/autodl-tmp/VQualA/alignment_module/imagereward.pth"
-    )
+    model = AIGCVQA(split_id=0)
 
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
 
@@ -62,10 +54,12 @@ def predict_single_model(model, dataloader, device):
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="预测中..."):
             image = batch["image"].to(device)
+            image_traditional = batch["image_traditional"].to(device)
+            video = batch["video"].to(device)
             prompt = batch["prompt"]
             video_names = batch["video_name"]
 
-            predicted_score = model.forward(image, prompt)
+            predicted_score = model.forward(image, image_traditional, video, prompt)
 
             all_predictions.extend(predicted_score.cpu().numpy())
             all_video_names.extend(video_names)
@@ -82,13 +76,15 @@ def predict_ensemble_models(models, dataloader, device):
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="预测中..."):
             image = batch["image"].to(device)
+            image_traditional = batch["image_traditional"].to(device)
+            video = batch["video"].to(device)
             prompt = batch["prompt"]
             video_name = batch["video_name"]
 
             batch_predictions = []
             for i, model in enumerate(models):
                 model.eval()
-                predicted_score = model.forward(image, prompt)
+                predicted_score = model.forward(image, image_traditional, video, prompt)
                 batch_predictions.append(predicted_score.cpu().numpy())
 
             ensemble_predictions = np.mean(batch_predictions, axis=0)
@@ -104,11 +100,11 @@ def main():
 
     parser.add_argument('--model_paths', nargs='+', type=str, required=True)
 
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--num_workers', type=int, default=1)
 
-    parser.add_argument('--output_dir', type=str, default='/root/autodl-tmp/VQualA/alignment_module/results')
-    parser.add_argument('--output_file', type=str, default='alignment_predictions.csv')
+    parser.add_argument('--output_dir', type=str, default='/root/autodl-tmp/VQualA/results')
+    parser.add_argument('--output_file', type=str, default='overall_predictions.csv')
 
     args = parser.parse_args()
 
@@ -116,7 +112,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    test_dataset = DatasetImage('test', 0)
+    test_dataset = DatasetTrack1('test', 0, video_clip_length=16)
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
@@ -144,7 +140,7 @@ def main():
 
     results_df = pd.DataFrame({
         'video_name': video_names,
-        'Alignment_MOS': predictions
+        'Overall_MOS': predictions
     })
 
     results_df.to_csv(output_file, index=False)
@@ -152,4 +148,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
