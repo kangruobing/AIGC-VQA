@@ -9,11 +9,12 @@ sys.path.append('/root/autodl-tmp/VQualA/')
 sys.path.append('/root/autodl-tmp/VQualA/temporal_module/model')
 
 from utils import save_metrics_to_file, setup_metrics_logging, Regress
-from utils import calculate_plcc, calculate_srocc, correlation_loss
+from utils import calculate_plcc, calculate_srocc, combined_loss, performance_fit
 
 from slowfast import Slowfast
 from datetime import datetime
 import numpy as np
+import pandas as pd
 import os
 import json
 import scipy.stats
@@ -21,19 +22,22 @@ import scipy.stats
 
 class Temporalmodule(pl.LightningModule):
     def __init__(self,
-                 logs_path="/root/autodl-tmp/VQualA/temporal_module/logs",
-                 checkpoints_path="/root/autodl-tmp/VQualA/temporal_module/checkpoints",
-                 hidden_ratio=4,
+                 split_id,
+                 output_dir="/root/autodl-tmp/VQualA/temporal_module",
+                 feature_extractor='False',
                  lr=1e-4,
-                 mse_weight=0.1,
-                 feature_extractor='True'):
+                 alpha=1.0,
+                 beta=0.3,
+                 weight_decay=0.01,):
         super().__init__()
 
         self.lr = lr
-        self.mse_weight = mse_weight
+        self.alpha = alpha
+        self.beta = beta
+        self.weight_decay = weight_decay
 
         self.model = Slowfast()
-        self.regress = Regress(in_features=2304, hidden_ratio=hidden_ratio)
+        self.regress = Regress(in_features=2304)
 
         if feature_extractor == 'True':
             for _, param in self.model.named_parameters():
@@ -43,6 +47,9 @@ class Temporalmodule(pl.LightningModule):
                 param.requires_grad = True
 
         #初始化指标记录
+        logs_path = os.path.join(output_dir, f"split_{split_id+1}")
+        checkpoints_path = os.path.join(output_dir, f"split_{split_id+1}")
+
         self.log_file_path, self.metrics_history = setup_metrics_logging(logs_path, checkpoints_path)
         
         self.validation_predictions = []
@@ -98,35 +105,26 @@ class Temporalmodule(pl.LightningModule):
 
         predicted_score = self.forward(video)
 
-        corr_loss, plcc, srocc = correlation_loss(predicted_score, target_score)
+        plcc = calculate_plcc(predicted_score, target_score)
+        srocc = calculate_srocc(predicted_score, target_score)
+        loss = combined_loss(predicted_score, target_score, self.alpha, self.beta)
 
-        #辅助损失函数
-        mse_loss = F.mse_loss(predicted_score, target_score.float())
-
-        #总损失：相关性损失 + 小权重的MSE损失
-        total_loss = corr_loss + self.mse_weight * mse_loss
-
-        self.log('train_loss', total_loss, prog_bar=True)
+        self.log('train_loss', loss, prog_bar=True)
         self.log('train_plcc', plcc, prog_bar=True)
         self.log('train_srocc', srocc, prog_bar=True)
         self.log('train_corr_avg', (plcc + srocc) / 2.0, prog_bar=True)
 
-        return total_loss
+        return loss
     
     def validation_step(self, batch, batch_idx):
         video, target_score = self.get_input(batch)
 
         predicted_score = self.forward(video)
 
-        corr_loss, plcc, srocc = correlation_loss(predicted_score, target_score)
+        plcc, srocc = performance_fit(target_score, predicted_score)
+        loss = combined_loss(predicted_score, target_score, self.alpha, self.beta)
 
-        #辅助损失函数
-        mse_loss = F.mse_loss(predicted_score, target_score.float())
-
-        #总损失
-        total_loss = corr_loss + self.mse_weight * mse_loss
-
-        self.log('val_loss', total_loss, prog_bar=True)
+        self.log('val_loss', loss, prog_bar=True)
         self.log('val_plcc', plcc, prog_bar=True)
         self.log('val_srocc', srocc, prog_bar=True)
         self.log('val_corr_avg', (plcc + srocc) / 2.0, prog_bar=True)
@@ -135,7 +133,7 @@ class Temporalmodule(pl.LightningModule):
         self.validation_targets.extend(target_score.detach().cpu().numpy())
 
         return {
-            'val_loss': total_loss,
+            'val_loss': loss,
             'val_plcc': plcc,
             'val_srocc': srocc,
             'val_corr_avg': (plcc + srocc) / 2.0,
@@ -155,12 +153,11 @@ class Temporalmodule(pl.LightningModule):
         all_targets = np.array(self.validation_targets)
 
         #相关性指标
-        final_plcc = calculate_plcc(torch.tensor(all_predictions), torch.tensor(all_targets))
-        final_srocc = calculate_srocc(torch.tensor(all_predictions), torch.tensor(all_targets))
+        final_plcc, final_srocc = performance_fit(torch.tensor(all_targets), torch.tensor(all_predictions))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
         results = {
-            'epoch': self.current_epoch,
+            'epoch': self.current_epoch + 1,
             'num_samples': len(all_predictions),
             'plcc': final_plcc,
             'srocc': final_srocc,
@@ -186,13 +183,17 @@ class Temporalmodule(pl.LightningModule):
 
         predicted_score = self.forward(video)
 
-        _, plcc, srocc = correlation_loss(predicted_score, target_score)
+        plcc = calculate_plcc(predicted_score, target_score)
+        srocc = calculate_srocc(predicted_score, target_score)
+        loss = combined_loss(predicted_score, target_score, self.alpha, self.beta)
 
+        self.log('test_loss', loss)
         self.log('test_plcc', plcc)
         self.log('test_srocc', srocc)
         self.log('test_corr_avg', (plcc + srocc) / 2.0)
 
         return {
+            'test_loss': loss,
             'test_plcc': plcc,
             'test_srocc': srocc,
             'test_corr_avg': (plcc + srocc) / 2.0
@@ -200,25 +201,45 @@ class Temporalmodule(pl.LightningModule):
     
     def evaluate_dataset(self,
                          dataloader,
-                         results_file="final_evaluation.json",
+                         model_weights_path=None,
+                         results_file="final_evaluation.csv",
                          results_path="/root/autodl-tmp/VQualA/temporal_module/logs"):
-        """在训练结束后用于评估数据集"""
+        """在训练结束后对验证/测试集进行评估"""
         print("\n=== 开始对数据集进行评估 ===")
+
+        if model_weights_path is not None:
+            if os.path.exists(model_weights_path):
+                print(f"正在加载模型权重: {model_weights_path}")
+                checkpoint = torch.load(model_weights_path, map_location='cpu')
+
+                if 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                else:
+                    state_dict = checkpoint
+
+                self.load_state_dict(state_dict, strict=False)
+                print("模型权重加载完成")
+            else:
+                print(f"模型权重不存在: {model_weights_path}")
+                print("使用当前模型权重进行评估")
 
         self.eval()
         all_predictions = []
         all_targets = []
+        all_video_names = []
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
                 #移动数据到设备
                 video = batch["video"].to(self.device)
                 target_score = batch["Temporal_MOS"].to(self.device)
+                video_names = batch["video_name"]
 
                 predicted_score = self.forward(video)
 
                 all_predictions.extend(predicted_score.cpu().numpy())
                 all_targets.extend(target_score.cpu().numpy())
+                all_video_names.extend(video_names)
 
                 if (batch_idx + 1) % 50 == 0:
                     print(f"已处理 {batch_idx + 1} 个batch")
@@ -231,17 +252,34 @@ class Temporalmodule(pl.LightningModule):
         final_srocc = calculate_srocc(torch.tensor(all_predictions), torch.tensor(all_targets))
         final_corr_avg = (final_plcc + final_srocc) / 2.0
 
-        results = {
-            'num_samples': len(all_predictions),
-            'plcc': final_plcc,
-            'srocc': final_srocc,
-            'corr_avg': final_corr_avg
+        detailed_results = pd.DataFrame({
+            'video_name': all_video_names,
+            'Temporal_MOS': all_predictions
+        })
+
+        os.makedirs(results_path, exist_ok=True)
+
+        detailed_csv_path = os.path.join(results_path, results_file)
+        detailed_results.to_csv(detailed_csv_path, index=False)
+
+        summary_file = results_file.replace('.csv', '_summary.json')
+        summary_path = os.path.join(results_path, summary_file)
+
+        summary_results = {
+            'evaluation_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%H:%S'),
+                'model_weights_path': model_weights_path,
+                'num_samples': len(all_predictions)
+            },
+            'metrics': {
+                'plcc': final_plcc,
+                'srocc': final_srocc,
+                'corr_avg': final_corr_avg
+            }
         }
 
-        #保存结果
-        results_path = os.path.join(results_path, results_file)
-
-        save_metrics_to_file(results, results_path)
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_results, f, indent=2, ensure_ascii=False)
 
         print(f"\n=== 数据集评估结果 ===")
         print(f"总样本数： {len(all_predictions)}")
@@ -249,13 +287,13 @@ class Temporalmodule(pl.LightningModule):
         print(f"SROCC: {final_srocc:.4f}")
         print(f"Corr_AVG: {final_corr_avg:.4f}")
 
-        return results
+        return summary_results, detailed_results
     
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.lr,
-            weight_decay=0.01
+            weight_decay=self.weight_decay
         )
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

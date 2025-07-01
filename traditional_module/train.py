@@ -1,3 +1,7 @@
+import os
+import argparse
+import random
+import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -8,68 +12,109 @@ import sys
 sys.path.append('/root/autodl-tmp/VQualA')
 
 import torch
+from utils import set_random_seed
 from torch.utils.data import DataLoader
 from dataset import DatasetImage
 
 
-def train():
+def train_single_split(args, split_id):
+    """训练单个数据划分"""
+    print(f"\n{'='*50}")
+    print(f"开始训练第 {split_id+1} 个划分")
+    print(f"{'='*50}")
+
+    current_seed = args.seed + split_id
+    set_random_seed(current_seed)
+
+    #输出目录
+    split_dir = os.path.join(args.output_dir, f"split_{split_id+1}")
+    checkpoint_dir = os.path.join(split_dir, "checkpoints")
+    log_dir = os.path.join(split_dir, "logs")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+
     checkpoint_callback = ModelCheckpoint(
         monitor="val_corr_avg",
-        dirpath="/root/autodl-tmp/VQualA/traditional_module/checkpoints",
-        filename="best_model",
+        dirpath=checkpoint_dir,
+        filename=f"best_model_split_{split_id+1}",
         mode="max"
     )
 
     logger = TensorBoardLogger(
-        save_dir="/root/autodl-tmp/VQualA/traditional_module/logs/tensorboard",
+        save_dir=log_dir,
         name="traditional_module"
     )
 
-    train_dataset = DatasetImage('train', video_size=384)
-    val_dataset = DatasetImage('val', video_size=384)
-    train_dataloader = DataLoader(train_dataset, batch_size=8, num_workers=8, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=8, num_workers=8, shuffle=True)
+    train_dataset = DatasetImage('train', split_id, video_size=384)
+    val_dataset = DatasetImage('val', split_id, video_size=384)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 
     model = Traditionalmodule(
-        freeze_strategy="partial",
-        freeze_ratio=0.5,
-        lr=1e-5,
-        alpha=1.0,
-        beta=0.3,
-        weight_decay=0.05
+        split_id=split_id,
+        output_dir=args.output_dir,
+        freeze_strategy=args.freeze_strategy,
+        freeze_ratio=args.freeze_ratio,
+        lr=args.lr,
+        alpha=args.alpha,
+        beta=args.beta,
+        weight_decay=args.weight_decay
     )
 
     trainer = pl.Trainer(
         precision=32,
-        max_epochs=20,
+        max_epochs=args.max_epochs,
         callbacks=[checkpoint_callback, ],
         logger=logger,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         gradient_clip_val=1.0,
-        check_val_every_n_epoch=1,
-        log_every_n_steps=5,
+        check_val_every_n_epoch=args.check_val_every_n_epoch,
+        log_every_n_steps=args.log_every_n_steps,
         num_sanity_val_steps=0
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)
 
-    print(f"=== 训练完成 ===")
+    print(f"第 {split_id+1} 个划分训练完成")
 
-    #加载最佳模型对训练集进行评估
-    if checkpoint_callback.best_model_path:
-        print("\n加载最佳模型进行最终评估...")
-        best_model = Traditionalmodule.load_from_checkpoint(checkpoint_callback.best_model_path)
-        best_model.to(model.device)
 
-        final_results = best_model.evaluate_dataset(train_dataloader)
+def main():
+    parser = argparse.ArgumentParser(description="traditional_module")
 
-        print(f"最终评估完成! 平均相关系数: {final_results['corr_avg']:.4f}")
-    else:
-        print("未找到最佳模型, 使用当前模型进行评估...")
+    #dataset
+    parser.add_argument('--num_splits', type=int, default=5)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=8)
 
-        final_results = model.evaluate_dataset(train_dataloader)
+    #model
+    parser.add_argument('--freeze_strategy', type=str, default='none')
+    parser.add_argument('--freeze_ratio', type=float, default=0.3)
 
-        print(f"最终评估完成! 平均相关系数: {final_results['corr_avg']:.4f}")
+    #train
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--weight_decay', type=float, default=0.05)
+    parser.add_argument('--alpha', type=float, default=1.0)
+    parser.add_argument('--beta', type=float, default=0.3)
+
+    #trainer
+    parser.add_argument('--max_epochs', type=int, default=20)
+    parser.add_argument('--check_val_every_n_epoch', type=int, default=1)
+    parser.add_argument('--log_every_n_steps', type=int, default=5)
+
+    #other
+    parser.add_argument('--seed', type=int, default=88)
+    parser.add_argument('--output_dir', type=str,
+                        default="/root/autodl-tmp/VQualA/traditional_module")
+    
+    args = parser.parse_args()
+
+    for split_id in range(args.num_splits):
+        try:
+            train_single_split(args, split_id)
+        except Exception as e:
+            print(f"第 {split_id+1} 个划分训练失败: {e}")
+            continue
+
 
 if __name__ == "__main__":
-    train()
+    main()
