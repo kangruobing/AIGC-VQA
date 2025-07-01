@@ -106,7 +106,7 @@ def main():
     parser.add_argument('--log_every_n_steps', type=int, default=5)
 
     #other
-    parser.add_argument('--seed',type=int, default=66)
+    parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--output_dir', type=str,
                         default="/root/autodl-tmp/VQualA/aesthetic_module")
     
@@ -118,6 +118,7 @@ def main():
         except Exception as e:
             print(f"第 {split_id+1} 个划分训练失败: {e}")
             continue
+
 
 if __name__ == "__main__":
     main()
