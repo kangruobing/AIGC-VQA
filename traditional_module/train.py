@@ -53,6 +53,7 @@ def train_single_split(args, split_id):
     model = Traditionalmodule(
         split_id=split_id,
         output_dir=args.output_dir,
+        swin_weights=args.swin_weights,
         freeze_strategy=args.freeze_strategy,
         freeze_ratio=args.freeze_ratio,
         lr=args.lr,
@@ -87,6 +88,8 @@ def main():
     parser.add_argument('--num_workers', type=int, default=8)
 
     #model
+    parser.add_argument('--swin_weights', type=int,
+                        default="/root/autodl-tmp/VQualA/traditional_module/model/Swin_b_384_in22k_SlowFast_Fast_LSVQ.pth")
     parser.add_argument('--freeze_strategy', type=str, default='none')
     parser.add_argument('--freeze_ratio', type=float, default=0.3)
 
